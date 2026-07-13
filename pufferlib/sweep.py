@@ -99,7 +99,7 @@ class Log(Space):
     def __init__(self, min, max, scale, is_integer=False):
         if scale == 'time':
             # TODO: Set scaling param intuitively based on number of jumps from min to max
-            scale = 1 / (np.log2(max) - np.log2(min))
+            scale = 1 / (math.log(max, self.base) - math.log(min, self.base))
         elif scale == 'auto':
             scale = 0.5
 
@@ -326,16 +326,17 @@ class Random:
     def observe(self, hypers, score, cost, is_failure=False):
         params = self.hyperparameters.from_dict(hypers)
         self.success_observations.append(dict(
-            input=hypers,
+            input=params,
             output=score,
             cost=cost,
             is_failure=is_failure,
         ))
 
     def early_stop(self, logs, target_key):
-        if any("loss/" in k and np.isnan(v) for k, v in logs.items()):
-            logs['is_loss_nan'] = True
-            return True
+        for v in logs.get('loss', {}).values():
+            if np.isnan(v):
+                logs['is_loss_nan'] = True
+                return True
         return False
 
 
@@ -390,9 +391,10 @@ class ParetoGenetic:
         ))
 
     def early_stop(self, logs, target_key):
-        if any("loss/" in k and np.isnan(v) for k, v in logs.items()):
-            logs['is_loss_nan'] = True
-            return True
+        for v in logs.get('loss', {}).values():
+            if np.isnan(v):
+                logs['is_loss_nan'] = True
+                return True
         return False
 
 
