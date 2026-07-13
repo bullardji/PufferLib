@@ -333,6 +333,7 @@ class Random:
         ))
 
     def early_stop(self, logs, target_key):
+        # TODO: A human should probably understand this before merging it.
         for v in logs.get('loss', {}).values():
             if np.isnan(v):
                 logs['is_loss_nan'] = True
@@ -391,6 +392,7 @@ class ParetoGenetic:
         ))
 
     def early_stop(self, logs, target_key):
+        # TODO: A human should probably understand this before merging it.
         for v in logs.get('loss', {}).values():
             if np.isnan(v):
                 logs['is_loss_nan'] = True
