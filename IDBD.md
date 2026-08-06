@@ -46,35 +46,65 @@ Muon's existing momentum buffer.
 
 ## Measured
 
-`tests/test_idbd.c`, Sutton's nonstationary tracking task — 20 binary inputs, 5
-relevant with weights flipping every 20 examples, 15 irrelevant. Asymptotic MSE,
-mean of 5 seeds:
+`tests/test_idbd.c` reproduces the three problems from Degris, Javed,
+Sharifnassab, Liu & Sutton, *Step-size Optimization for Continual Learning*
+(arXiv:2401.17401), to their spec: inputs `x ~ N(0,1)^20`, 15 target weights
+constant at 0, 5 at +/-1, and one of the five flipping sign every 20 samples.
+100k steps, mean of 3 seeds, every method swept over its own parameters.
+
+### 1. Weight-flipping
 
 | | MSE |
 |---|---|
-| best fixed step size (swept over 6 values) | 5.01 |
-| IDBD, theta = 0.05 | **2.58** |
+| classic SGD (best alpha) | 3.37 |
+| RMSProp (best eta, gamma) | 3.75 |
+| **normalized IDBD (best theta)** | **1.42** |
+| oracle SGD — 15 weights pinned to 0 | 1.46 |
 
-It gets there by separating the groups: step size 0.189 on the relevant inputs
-against 0.001 on the irrelevant ones, a 180x ratio no single alpha can express.
+This reproduces the paper's Figure 2, including the part that looks like a
+mistake: RMSProp is *worse* than plain SGD. All components of `x` share a
+variance and the error is global, so normalization hands every weight the same
+step size and cannot tell a constant weight from a flipping one. IDBD reaches
+oracle performance by learning step size 0.126 on the flipping inputs against
+0.0003 on the constant ones, a 416x ratio. It edges past the oracle because the
+oracle is the best *constant* step-size vector and IDBD's varies over time.
 
-The number that matters more is the spread: **7.6% across theta from 0.01 to
-0.5**. A knob that still needs a 50x sweep has not replaced lr, it has renamed
-it. This one does not.
+### 2. Meta-step-size scale sensitivity
 
-## Why the normalizer
+The paper's stated open problem (their Figure 4): IDBD's meta-step-size is
+sensitive to gradient magnitude, and the best value moved ~5 orders of magnitude
+across target-weight scales, which "makes it difficult to use IDBD in many
+common settings". Best theta over a decade grid, target weights at +/-0.1, +/-1,
++/-10:
 
-Plain IDBD — no `v_i` — reaches MSE 2.72 but goes NaN at theta >= 0.05, and a
-sweep over theta would find that cliff immediately. Two fixes were measured:
+| | spread in best theta over 100x gradient scale |
+|---|---|
+| plain IDBD | 1000x |
+| normalized IDBD | 10x — one grid step |
 
-- Cap `alpha_i` at `1/g_i^2`: stable everywhere, but MSE 4.16. It throttles the
-  step exactly when the error is large and fast tracking is wanted, giving back
-  most of the benefit.
-- Normalize the meta-update by `v_i`, a decaying max of `|g h|` (Autostep,
-  Mahmood et al. 2012): stable to theta = 0.5, MSE 2.58.
+That is the whole reason the normalizer is in. theta multiplies a quantity whose
+scale is the gradient's; dividing it out is what lets theta replace lr in a
+sweep instead of renaming it.
 
-The second is in. theta multiplies a quantity whose scale is the gradient's;
-dividing that out is what makes the knob insensitive.
+### 3. 1D noisy rate-tracking — the test that could have sunk this
+
+The risk in fixing IDBD with a normalizer is that normalization is exactly what
+makes RMSProp fail the paper's rate-tracking problem. There `x = 1` always, so a
+larger error means faster target drift and calls for a *larger* step; RMSProp
+reads the larger gradient and shrinks the step instead, doing precisely the
+opposite of what is needed. A normalized IDBD could plausibly inherit that.
+
+It does not. Both swept, 8 segments of 50k steps with sigma redrawn from U(0,3):
+
+| | MSE | mean \|log(alpha/alpha\*)\| |
+|---|---|---|
+| RMSProp | 6.34 | — |
+| normalized IDBD | 4.19 | 0.031 |
+
+alpha stays within about 3% of the closed-form optimum (paper eq. 2). The
+normalizer divides by a decaying max of `\|g h\|`, and `h` carries the sign
+correlation that tells fast drift apart from noise, so the scale is removed
+without removing the signal RMSProp discards.
 
 ## Wiring it up
 
@@ -108,13 +138,19 @@ start from the same weights and a sweep over theta stays comparable to the fixed
 ## Not verified
 
 **No training run.** Whether IDBD beats a CARBS/Protein-swept lr on a real Ocean
-env is unmeasured — I had no GPU. The tracking task is the setting IDBD was
-designed for and says the arithmetic is right; it says nothing about how this
-behaves on a MinGRU policy at 3M SPS. Two things to watch there: `g` is an
-orthogonalized direction whose scale Muon already controls, so the curvature
-proxy `g^2` may behave differently than it does on raw LMS gradients; and three
-extra param-sized buffers plus an elementwise pass cost bandwidth on a kernel
-that is already memory-bound.
+env is unmeasured — I had no GPU. These are the problems IDBD was designed for
+and they say the arithmetic is right; they say nothing about a MinGRU policy at
+3M SPS. Three things to watch there:
+
+- All three problems are linear regression with one input per weight. The paper
+  is explicit that generalizing IDBD to deep networks is open.
+- The h decay uses `g^2` where the paper uses `x^2`. `idbd.cuh` sits after Muon's
+  orthogonalization and never sees the per-weight input activation, so `x^2` is
+  not available to it. `g` is also already scale-controlled by Muon, so the
+  curvature proxy may behave differently than on raw LMS gradients. If IDBD
+  underperforms on a real env, this substitution is the first suspect.
+- Three extra param-sized buffers and an elementwise pass cost bandwidth on a
+  kernel that is already memory-bound.
 
 The first experiment is the cheap one: `idbd_theta = 0` against a swept lr on
 the same wallclock budget, on one Ocean env, checking whether the flatness in
