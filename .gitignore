@@ -178,3 +178,7 @@ resources/drive/binaries/*
 .refactor-snapshots/
 
 vendor/fast-nle/
+
+# IDBD test binaries
+build_test_idbd
+build_test_idbd_cu
